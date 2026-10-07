@@ -13,6 +13,7 @@ export default function PairScreen() {
   const [relayUrl, setRelayUrl] = useState(defaultRelay)
   const [machineId, setMachineId] = useState("")
   const [code, setCode] = useState("")
+  const [name, setName] = useState("")
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
 
@@ -20,7 +21,7 @@ export default function PairScreen() {
     setBusy(true)
     setError(null)
     try {
-      await pair({ machineId, code, relayUrl })
+      await pair({ machineId, code, relayUrl, name })
       router.replace("/(tabs)")
     } catch (caught) {
       setError((caught as Error).message)
@@ -33,10 +34,10 @@ export default function PairScreen() {
     <Screen>
       <KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : undefined} style={styles.flex}>
         <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
-          <Text style={styles.title}>Pair with your laptop</Text>
+          <Text style={styles.title}>Pair with a laptop</Text>
           <Text style={styles.subtitle}>
-            Start the bridge on your machine. It prints a machine id and a pairing code. Type them in here and this
-            phone can approve work from anywhere.
+            On the machine running the bridge, the terminal prints a machine id and a pairing code. Type them in
+            here. Pair as many laptops as you like, then switch between them in Settings.
           </Text>
 
           <Card>
@@ -62,6 +63,16 @@ export default function PairScreen() {
               value={code}
             />
 
+            <Text style={[styles.label, styles.spaced]}>Name (optional)</Text>
+            <TextInput
+              autoCapitalize="none"
+              onChangeText={setName}
+              placeholder="work laptop, home desktop…"
+              placeholderTextColor={theme.textMuted}
+              style={styles.input}
+              value={name}
+            />
+
             <Text style={[styles.label, styles.spaced]}>Relay URL</Text>
             <TextInput
               autoCapitalize="none"
@@ -84,7 +95,8 @@ export default function PairScreen() {
           />
 
           <Text style={styles.help}>
-            Codes rotate every 15 minutes. You can pair more phones, and each one can be revoked from Settings.
+            Codes rotate every 15 minutes. A code can only be used once. If the code has expired, read the newest
+            one from the bridge terminal, or restart the bridge.
           </Text>
         </ScrollView>
       </KeyboardAvoidingView>
@@ -113,4 +125,5 @@ const styles = StyleSheet.create({
   codeInput: { fontSize: 20, letterSpacing: 4, textAlign: "center" },
   error: { color: theme.danger, fontSize: 13, marginBottom: 12 },
   help: { color: theme.textMuted, fontSize: 12, lineHeight: 18, marginTop: 16 },
+  helpDim: { color: theme.textMuted, fontSize: 11, marginTop: 8, opacity: 0.7 },
 })

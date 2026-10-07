@@ -1,32 +1,45 @@
 import Constants from "expo-constants"
-import { useEffect, useState } from "react"
-import { Alert, ScrollView, StyleSheet, Text, TextInput, View } from "react-native"
+import { useState } from "react"
+import { Alert, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native"
+import { useRouter } from "expo-router"
 import * as Device from "expo-device"
 
 import { Button, Card, Muted, Screen } from "../../components/ui"
-import { buildTimeRelayUrl } from "../../lib/credentials"
+import { machineLabel } from "../../lib/credentials"
 import { relativeTime, theme } from "../../lib/format"
 import { registerForPush } from "../../lib/notifications"
 import { useStore } from "../../lib/store"
 
 export default function SettingsScreen() {
-  const { credentials, machine, relayStatus, streamConnected, unpair, setRelayUrl, refreshApprovals } = useStore()
-  const [relayDraft, setRelayDraft] = useState(() => credentials?.relayUrl ?? buildTimeRelayUrl())
+  const {
+    credentials,
+    machines,
+    activeMachineId,
+    machine,
+    relayStatus,
+    streamConnected,
+    switchMachine,
+    setRelayUrl,
+    removeMachine,
+    refreshApprovals,
+  } = useStore()
+  const router = useRouter()
+  const [relayDraft, setRelayDraft] = useState(credentials?.relayUrl ?? "")
   const [pushState, setPushState] = useState<"unknown" | "on" | "off">("unknown")
   const [busy, setBusy] = useState(false)
 
-  useEffect(() => {
-    // In Expo Go (and on emulators) remote push is unavailable, so probe instead of assuming.
-    registerForPush()
-      .then((token) => setPushState(token ? "on" : "off"))
-      .catch(() => setPushState("off"))
-  }, [])
+  const probePush = async () => {
+    setPushState("unknown")
+    const token = await registerForPush()
+    setPushState(token ? "on" : "off")
+  }
 
   const saveRelay = async () => {
+    if (!credentials) return
     setBusy(true)
     try {
-      await setRelayUrl(relayDraft.trim())
-      Alert.alert("Saved", "Relay URL updated. Restart the app if pairing still fails.")
+      await setRelayUrl(credentials.machineId, relayDraft.trim())
+      Alert.alert("Saved", "Relay URL updated for this machine.")
     } catch (error) {
       Alert.alert("Could not save", (error as Error).message)
     } finally {
@@ -34,11 +47,15 @@ export default function SettingsScreen() {
     }
   }
 
-  const confirmUnpair = () => {
-    Alert.alert("Unpair this phone?", "You will need a fresh pairing code to reconnect.", [
-      { text: "Cancel", style: "cancel" },
-      { text: "Unpair", style: "destructive", onPress: () => void unpair() },
-    ])
+  const confirmRemove = (machineId: string, label: string) => {
+    Alert.alert(
+      `Remove ${label}?`,
+      "This phone will stop talking to that laptop. You can pair it again later with a fresh code.",
+      [
+        { text: "Cancel", style: "cancel" },
+        { text: "Remove", style: "destructive", onPress: () => void removeMachine(machineId) },
+      ],
+    )
   }
 
   const projectId =
@@ -50,6 +67,49 @@ export default function SettingsScreen() {
         <Text style={styles.title}>Settings</Text>
 
         <Card>
+          <View style={styles.cardHeader}>
+            <Text style={styles.label}>Machines</Text>
+            <Pressable onPress={() => router.push("/pair")}>
+              <Text style={styles.add}>+ Add</Text>
+            </Pressable>
+          </View>
+
+          {machines.length === 0 ? <Muted>No machines paired yet.</Muted> : null}
+
+          {machines.map((entry) => {
+            const active = entry.machineId === activeMachineId
+            return (
+              <Pressable
+                key={entry.machineId}
+                onPress={() => void switchMachine(entry.machineId)}
+                style={[styles.machine, active && styles.machineActive]}
+              >
+                <View style={styles.flex}>
+                  <Text style={styles.machineName}>
+                    {machineLabel(entry)}
+                    {active ? "  ✓" : ""}
+                  </Text>
+                  <Text style={styles.machineId}>{entry.machineId}</Text>
+                  {active && machine ? (
+                    <Text style={styles.machineMeta}>
+                      {machine.opencodeHealthy ? `opencode ${machine.opencodeVersion ?? ""}` : "opencode unreachable"}
+                    </Text>
+                  ) : null}
+                </View>
+                <Pressable onPress={() => confirmRemove(entry.machineId, machineLabel(entry))} hitSlop={10}>
+                  <Text style={styles.remove}>remove</Text>
+                </Pressable>
+              </Pressable>
+            )
+          })}
+
+          <Text style={styles.hint}>
+            Tap to switch, long-press to rename. Only one machine is shown at a time, so you always know which
+            laptop you are approving work on.
+          </Text>
+        </Card>
+
+        <Card>
           <Text style={styles.label}>Connection</Text>
           <Row label="Phone stream" value={streamConnected ? "connected" : "reconnecting…"} good={streamConnected} />
           <Row
@@ -57,13 +117,16 @@ export default function SettingsScreen() {
             value={relayStatus?.agentOnline ? "online" : "offline"}
             good={Boolean(relayStatus?.agentOnline)}
           />
-          <Row label="Machine" value={machine?.name ?? credentials?.machineId ?? "unknown"} />
-          <Row label="opencode" value={machine?.opencodeHealthy ? `healthy ${machine.opencodeVersion ?? ""}` : "unreachable"} good={Boolean(machine?.opencodeHealthy)} />
           <Row label="Bridge seen" value={relativeTime(relayStatus?.lastSeenAt) || "never"} />
         </Card>
 
         <Card>
-          <Text style={styles.label}>Push notifications</Text>
+          <View style={styles.cardHeader}>
+            <Text style={styles.label}>Push notifications</Text>
+            <Pressable onPress={() => void probePush()}>
+              <Text style={styles.add}>retest</Text>
+            </Pressable>
+          </View>
           <Row
             label="Status"
             value={
@@ -71,51 +134,50 @@ export default function SettingsScreen() {
                 ? "ready"
                 : pushState === "off"
                   ? "not available in this build"
-                  : "checking…"
+                  : "not tested yet"
             }
             good={pushState === "on"}
           />
           {pushState !== "on" ? (
             <Text style={styles.note}>
-              Remote push needs a development build on a physical device (Expo Go cannot receive it). Everything else
-              works in Expo Go over the live connection.
+              Remote push needs a development build with Firebase credentials; Expo Go cannot receive it.
+              Everything else works over the live connection.
             </Text>
           ) : null}
           <Row label="EAS project" value={projectId} />
         </Card>
 
-        <Card>
-          <Text style={styles.label}>Relay</Text>
-          <TextInput
-            autoCapitalize="none"
-            autoCorrect={false}
-            onChangeText={setRelayDraft}
-            placeholder="https://your-worker.workers.dev"
-            placeholderTextColor={theme.textMuted}
-            style={styles.input}
-            value={relayDraft}
-          />
-          <View style={styles.actions}>
-            <Button label="Save" onPress={saveRelay} disabled={busy || !relayDraft.trim()} small />
-            <Button label="Refresh" onPress={() => void refreshApprovals()} small />
-          </View>
-          {machine?.directories?.length ? (
-            <>
-              <Text style={[styles.label, styles.spaced]}>Known projects</Text>
-              {machine.directories.map((directory) => (
-                <Muted key={directory}>{directory}</Muted>
-              ))}
-            </>
-          ) : null}
-        </Card>
-
-        <Card style={styles.dangerCard}>
-          <Text style={styles.label}>Pairing</Text>
-          <Muted>Machine id: {credentials?.machineId ?? "unknown"}</Muted>
-          <View style={styles.actions}>
-            <Button label="Unpair this phone" tone="danger" onPress={confirmUnpair} small />
-          </View>
-        </Card>
+        {credentials ? (
+          <Card>
+            <Text style={styles.label}>Relay for {machineLabel(credentials)}</Text>
+            <TextInput
+              autoCapitalize="none"
+              autoCorrect={false}
+              onChangeText={setRelayDraft}
+              placeholder="https://your-worker.workers.dev"
+              placeholderTextColor={theme.textMuted}
+              style={styles.input}
+              value={relayDraft}
+            />
+            <View style={styles.actions}>
+              <Button
+                label="Save"
+                onPress={saveRelay}
+                disabled={busy || !relayDraft.trim()}
+                small
+              />
+              <Button label="Refresh" onPress={() => void refreshApprovals()} small />
+            </View>
+            {machine?.directories?.length ? (
+              <>
+                <Text style={[styles.label, styles.spaced]}>Known projects</Text>
+                {machine.directories.map((directory) => (
+                  <Muted key={directory}>{directory}</Muted>
+                ))}
+              </>
+            ) : null}
+          </Card>
+        ) : null}
 
         {!Device.isDevice ? <Muted>Running on an emulator: push is disabled.</Muted> : null}
       </ScrollView>
@@ -134,8 +196,28 @@ function Row({ label, value, good }: { label: string; value: string; good?: bool
 
 const styles = StyleSheet.create({
   content: { padding: 16, paddingBottom: 48 },
+  flex: { flex: 1 },
   title: { color: theme.text, fontSize: 22, fontWeight: "700", marginBottom: 16 },
+  cardHeader: { flexDirection: "row", justifyContent: "space-between", alignItems: "center" },
   label: { color: theme.textMuted, fontSize: 11, fontWeight: "700", letterSpacing: 1, textTransform: "uppercase", marginBottom: 8 },
+  add: { color: theme.accent, fontSize: 13, fontWeight: "600", marginBottom: 8 },
+  machine: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    paddingVertical: 10,
+    paddingHorizontal: 10,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: "transparent",
+    marginBottom: 4,
+  },
+  machineActive: { borderColor: theme.accent, backgroundColor: theme.accentMuted },
+  machineName: { color: theme.text, fontSize: 15, fontWeight: "600" },
+  machineId: { color: theme.textMuted, fontSize: 11, marginTop: 2 },
+  machineMeta: { color: theme.textMuted, fontSize: 11, marginTop: 2 },
+  remove: { color: theme.danger, fontSize: 12 },
+  hint: { color: theme.textMuted, fontSize: 11, lineHeight: 16, marginTop: 8 },
   spaced: { marginTop: 14 },
   row: { flexDirection: "row", justifyContent: "space-between", paddingVertical: 5, gap: 12 },
   rowLabel: { color: theme.textMuted, fontSize: 13 },
@@ -152,5 +234,4 @@ const styles = StyleSheet.create({
     fontSize: 13,
   },
   actions: { flexDirection: "row", gap: 10, marginTop: 12, alignItems: "center" },
-  dangerCard: { borderColor: "#4a2626" },
 })

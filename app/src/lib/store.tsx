@@ -12,18 +12,22 @@ import type { ReactNode } from "react"
 import { RelayApi, type RelayStatus } from "./api"
 import {
   buildTimeRelayUrl,
-  clearCredentials,
-  loadCredentials,
+  getActiveMachineId,
+  loadMachines,
+  machineLabel,
+  persistMachines,
   randomHex,
-  saveCredentials,
-  updateRelayUrl,
-  type Credentials,
+  setActiveMachineId,
+  type StoredMachine,
 } from "./credentials"
 import { registerForPush, syncApprovalBadge, watchPushTokenRotations } from "./notifications"
 
 type Store = {
   ready: boolean
-  credentials: Credentials | null
+  machines: StoredMachine[]
+  activeMachineId: string | null
+  /** The machine currently in view, for code that only cares about one. */
+  credentials: StoredMachine | null
   api: RelayApi | null
   paired: boolean
   streamConnected: boolean
@@ -37,9 +41,11 @@ type Store = {
   refreshApprovals: () => Promise<void>
   refreshSessions: () => Promise<void>
   resolveApproval: (approval: PendingApproval, response: PermissionResponse) => Promise<void>
-  pair: (input: { machineId: string; code: string; relayUrl?: string }) => Promise<void>
-  setRelayUrl: (url: string) => Promise<void>
-  unpair: () => Promise<void>
+  pair: (input: { machineId: string; code: string; relayUrl?: string; name?: string }) => Promise<StoredMachine>
+  switchMachine: (machineId: string) => Promise<void>
+  renameMachine: (machineId: string, name: string) => Promise<void>
+  setRelayUrl: (machineId: string, url: string) => Promise<void>
+  removeMachine: (machineId: string) => Promise<void>
   rpc: <T>(method: Parameters<RelayApi["rpc"]>[0], params?: Record<string, unknown>) => Promise<T>
 }
 
@@ -52,7 +58,8 @@ export function useStore() {
 }
 
 export function StoreProvider({ children }: { children: ReactNode }) {
-  const [credentials, setCredentials] = useState<Credentials | null>(null)
+  const [machines, setMachines] = useState<StoredMachine[]>([])
+  const [activeMachineId, setActive] = useState<string | null>(null)
   const [ready, setReady] = useState(false)
   const [streamConnected, setStreamConnected] = useState(false)
   const [machine, setMachine] = useState<MachineInfo | null>(null)
@@ -62,16 +69,35 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   const [revision, setRevision] = useState(0)
   const [lastError, setLastError] = useState<string | null>(null)
 
+  const credentials = useMemo(
+    () => machines.find((entry) => entry.machineId === activeMachineId) ?? null,
+    [machines, activeMachineId],
+  )
   const api = useMemo(() => (credentials ? new RelayApi(credentials) : null), [credentials])
 
+  const bump = useCallback(() => setRevision((value) => value + 1), [])
+
   useEffect(() => {
-    loadCredentials()
-      .then(setCredentials)
+    loadMachines()
+      .then(async (loaded) => {
+        setMachines(loaded)
+        const storedActive = await getActiveMachineId()
+        const active = loaded.find((entry) => entry.machineId === storedActive) ?? loaded[0]
+        setActive(active?.machineId ?? null)
+      })
       .catch((error) => setLastError((error as Error).message))
       .finally(() => setReady(true))
   }, [])
 
-  const bump = useCallback(() => setRevision((value) => value + 1), [])
+  /** Switching machines must not leave another laptop's data on screen. */
+  const clearMachineData = useCallback(() => {
+    setApprovals([])
+    setSessions([])
+    setMachine(null)
+    setRelayStatus(null)
+    setStreamConnected(false)
+    setLastError(null)
+  }, [])
 
   const refreshApprovals = useCallback(async () => {
     const client = api
@@ -146,7 +172,6 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     [approvals.length, bump],
   )
 
-  // Live channel + initial hydration.
   useEffect(() => {
     if (!api) return
     const close = api.openStream({
@@ -184,7 +209,6 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     }
   }, [api, onEvent, onNotify, refreshApprovals, refreshSessions])
 
-  // Keep push registration in step with the relay.
   useEffect(() => {
     if (!api) return
     let cancelled = false
@@ -215,36 +239,79 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   }, [approvals.length])
 
   const pair = useCallback(
-    async (input: { machineId: string; code: string; relayUrl?: string }) => {
+    async (input: { machineId: string; code: string; relayUrl?: string; name?: string }) => {
       const relayUrl = (input.relayUrl || buildTimeRelayUrl()).replace(/\/+$/, "")
-      if (!relayUrl) throw new Error("set the relay URL first (Settings or build config)")
-      const next: Credentials = {
+      if (!relayUrl) throw new Error("enter your relay URL, or set extra.relayUrl in app.json when building")
+      const draft: StoredMachine = {
         relayUrl,
         machineId: input.machineId.trim(),
         deviceId: randomHex(16),
         deviceSecret: randomHex(32),
-        deviceName: "android-phone",
+        name: input.name?.trim() || "",
+        addedAt: Date.now(),
       }
-      const probe = new RelayApi(next)
-      await probe.pair({
-        relayUrl: next.relayUrl,
-        machineId: next.machineId,
+
+      const probe = new RelayApi(draft)
+      const result = await probe.pair({
+        relayUrl: draft.relayUrl,
+        machineId: draft.machineId,
         code: input.code,
-        deviceId: next.deviceId,
-        deviceSecret: next.deviceSecret,
-        deviceName: next.deviceName,
+        deviceId: draft.deviceId,
+        deviceSecret: draft.deviceSecret,
+        deviceName: "android-phone",
       })
-      await saveCredentials(next)
-      setCredentials(next)
+
+      const stored: StoredMachine = {
+        ...draft,
+        name: draft.name || result.machineName || machineLabel(draft),
+      }
+
+      const next = [...machines.filter((entry) => entry.machineId !== stored.machineId), stored]
+      await persistMachines(next)
+      await setActiveMachineId(stored.machineId)
+      clearMachineData()
+      setMachines(next)
+      setActive(stored.machineId)
       setLastError(null)
+      return stored
     },
-    [],
+    [clearMachineData, machines],
+  )
+
+  const switchMachine = useCallback(
+    async (machineId: string) => {
+      if (machineId === activeMachineId) return
+      clearMachineData()
+      await setActiveMachineId(machineId)
+      setActive(machineId)
+    },
+    [activeMachineId, clearMachineData],
+  )
+
+  const renameMachine = useCallback(
+    async (machineId: string, name: string) => {
+      const next = machines.map((entry) => (entry.machineId === machineId ? { ...entry, name: name.trim() } : entry))
+      await persistMachines(next)
+      setMachines(next)
+    },
+    [machines],
+  )
+
+  const setRelayUrl = useCallback(
+    async (machineId: string, url: string) => {
+      const clean = url.replace(/\/+$/, "")
+      const next = machines.map((entry) => (entry.machineId === machineId ? { ...entry, relayUrl: clean } : entry))
+      await persistMachines(next)
+      setMachines(next)
+    },
+    [machines],
   )
 
   const resolveApproval = useCallback(
     async (approval: PendingApproval, response: PermissionResponse) => {
       const client = api
       if (!client) throw new Error("this phone is not paired yet")
+      // Drop it locally straight away so the card disappears even if the relay is slow.
       setApprovals((current) =>
         current.filter((entry) => !(entry.id === approval.id && entry.sessionID === approval.sessionID)),
       )
@@ -259,32 +326,33 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     [api, bump],
   )
 
-  const setRelayUrl = useCallback(
-    async (url: string) => {
-      const clean = url.replace(/\/+$/, "")
-      await updateRelayUrl(clean)
-      setCredentials((current) => (current ? { ...current, relayUrl: clean } : current))
+  const removeMachine = useCallback(
+    async (machineId: string) => {
+      const target = machines.find((entry) => entry.machineId === machineId)
+      if (target) {
+        await new RelayApi(target).unpair().catch(() => undefined)
+      }
+      const next = machines.filter((entry) => entry.machineId !== machineId)
+      await persistMachines(next)
+      setMachines(next)
+      if (activeMachineId === machineId) {
+        const fallback = next[0]?.machineId ?? null
+        clearMachineData()
+        await setActiveMachineId(fallback)
+        setActive(fallback)
+      }
     },
-    [],
+    [activeMachineId, clearMachineData, machines],
   )
-
-  const unpair = useCallback(async () => {
-    const client = api
-    await client?.unpair().catch(() => undefined)
-    await clearCredentials()
-    setCredentials(null)
-    setApprovals([])
-    setSessions([])
-    setMachine(null)
-    setRelayStatus(null)
-  }, [api])
 
   const value = useMemo<Store>(
     () => ({
       ready,
+      machines,
+      activeMachineId,
       credentials,
       api,
-      paired: Boolean(credentials),
+      paired: machines.length > 0,
       streamConnected,
       machine,
       relayStatus,
@@ -296,12 +364,16 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       refreshSessions,
       resolveApproval,
       pair,
+      switchMachine,
+      renameMachine,
       setRelayUrl,
-      unpair,
+      removeMachine,
       rpc,
     }),
     [
       ready,
+      machines,
+      activeMachineId,
       credentials,
       api,
       streamConnected,
@@ -315,8 +387,10 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       refreshSessions,
       resolveApproval,
       pair,
+      switchMachine,
+      renameMachine,
       setRelayUrl,
-      unpair,
+      removeMachine,
       rpc,
     ],
   )
