@@ -1,0 +1,14 @@
+{
+  "name": "@opencode-mobile/protocol",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Type-only protocol shared by the bridge, the Cloudflare relay and the phone app.",
+  "types": "./protocol.ts",
+  "exports": {
+    ".": {
+      "types": "./protocol.ts",
+      "default": "./protocol.ts"
+    }
+  }
+}

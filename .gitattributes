@@ -1,0 +1,12 @@
+# Normalise line endings so the same file is not rewritten by every contributor.
+* text=auto eol=lf
+
+*.png binary
+*.jpg binary
+*.ico binary
+*.ttf binary
+*.otf binary
+
+# Keep Gradle's generated Windows files as-is.
+app/android/gradlew text eol=crlf
+app/android/gradlew.bat text eol=crlf

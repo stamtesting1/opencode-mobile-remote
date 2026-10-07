@@ -1,0 +1,26 @@
+{
+  "name": "opencode-mobile",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Monitor and steer opencode from your phone: approvals, progress, prompts and push notifications.",
+  "workspaces": [
+                       "shared",
+                       "bridge",
+                       "relay"
+                   ],
+  "scripts":  {
+                    "bridge":  "npm --workspace bridge run build && npm --workspace bridge run start",
+                    "bridge:watch": "npm --workspace bridge run dev",
+                    "relay:dev": "npm --workspace relay run dev",
+                    "relay:deploy": "npm --workspace relay run deploy",
+                    "typecheck": "npm --workspace bridge run typecheck && npm --workspace relay run typecheck",
+                    "test": "npm --workspace relay run test",
+                    "e2e": "node scripts/e2e.mjs",
+                    "app": "npm --prefix app run start",
+                    "app:typecheck": "npm --prefix app run typecheck",
+                    "app:lint": "npm --prefix app run lint"
+                },
+  "engines":  {
+                    "node":  ">=20"
+                }
+}

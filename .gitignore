@@ -1,0 +1,10 @@
+node_modules/
+dist/
+.wrangler/
+.expo/
+.expo-export/
+app/android/
+app/ios/
+*.log
+.DS_Store
+bridge/state/
