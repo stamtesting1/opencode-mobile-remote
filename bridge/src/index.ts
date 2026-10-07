@@ -357,7 +357,7 @@ if (this.server && !this.server.killed) {
         const directory = requiredString(params, "directory")
         const id = requiredString(params, "id")
         const text = requiredString(params, "text")
-        const messageID = randomUUID()
+        const messageID = newMessageId()
         await this.client.prompt(directory, id, text, {
           messageID,
           agent: optionalString(params, "agent"),
@@ -370,7 +370,7 @@ if (this.server && !this.server.killed) {
         const directory = requiredString(params, "directory")
         const text = requiredString(params, "text")
         const session = await this.client.createSession(directory, optionalString(params, "title") ?? firstLine(text))
-        const messageID = randomUUID()
+        const messageID = newMessageId()
         await this.client.prompt(directory, session.id, text, {
           messageID,
           agent: optionalString(params, "agent"),
@@ -535,6 +535,11 @@ approvals: this.store
       error: memory?.error ?? lastError?.data?.message ?? lastError?.name,
     }
   }
+}
+
+/** opencode requires client-supplied message ids to be prefixed with "msg". */
+function newMessageId() {
+  return `msg_${randomUUID().replace(/-/g, "")}`
 }
 
 function requiredString(params: Record<string, unknown>, key: string) {

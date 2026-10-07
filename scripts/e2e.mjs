@@ -77,7 +77,7 @@ async function waitFor(description, check, timeoutMs = 90_000) {
     if (result) return result
     await new Promise((resolve) => setTimeout(resolve, 400))
   }
-  throw new Error(`timed out waiting for ${description}`)
+  throw new Error(`timed out waiting for ${description}${healthProblem ? ` (${healthProblem})` : ""}`)
 }
 
 function check(label, condition, detail) {
@@ -88,6 +88,8 @@ function check(label, condition, detail) {
     console.log(`  FAIL  ${label}${detail ? ` -> ${detail}` : ""}`)
   }
 }
+
+let healthProblem = "unknown"
 
 async function main() {
   console.log("\nopencode mobile end to end test")
@@ -116,8 +118,14 @@ async function main() {
   await waitFor("opencode to become healthy", async () => {
     try {
       const response = await fetch(`${opencodeUrl}/global/health`, { headers: opencodeAuth })
-      return response.ok
-    } catch {
+      if (!response.ok) {
+        healthProblem = `status ${response.status} ${(await response.text()).slice(0, 120)}`
+        return false
+      }
+      healthProblem = ""
+      return true
+    } catch (error) {
+      healthProblem = `connection: ${error.message}`
       return false
     }
   })
@@ -264,6 +272,25 @@ async function main() {
   // 9. abort on an idle session is a no-op, not a crash
   const aborted = await rpc("session.abort", { id: session.id, directory: project })
   check("session.abort does not throw", aborted === true || aborted === false, String(aborted))
+
+  // 9b. prompts must be accepted by opencode. This guards the message id format:
+  // opencode rejects ids that do not start with "msg", which silently broke New task.
+  let promptError = ""
+  try {
+    await rpc("session.prompt", {
+      id: session.id,
+      directory: project,
+      text: "reply with the single word: pong",
+    })
+    check("session.prompt is accepted", true)
+  } catch (error) {
+    promptError = error.message
+    check(
+      "session.prompt is accepted",
+      !/starting with "msg"/i.test(promptError),
+      promptError.slice(0, 160),
+    )
+  }
 
   // 10. relay status reflects both sides
   const statusResponse = await fetch(`${relayUrl}/v1/status?machine=${machineId}`, {
